@@ -64,6 +64,8 @@ class Buffer:
             comm: the `mpi4py.MPI.Comm` communicator to use in case the group parameter is absent.
         """
         check_nvlink_connections(group)
+        torch.cuda.current_device()
+        torch.cuda.synchronize()
 
         # Initialize the CPP runtime
         if group is not None:
