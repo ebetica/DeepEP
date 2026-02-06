@@ -4,7 +4,6 @@ import setuptools
 import importlib
 
 from pathlib import Path
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 
 # Wheel specific: the wheels only include the soname of the host library `libnvshmem_host.so.X`
@@ -16,6 +15,8 @@ def get_nvshmem_host_lib_name(base_dir):
 
 
 if __name__ == '__main__':
+    from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
     disable_nvshmem = False
     nvshmem_dir = os.getenv('NVSHMEM_DIR', None)
     nvshmem_host_lib = 'libnvshmem_host.so'
