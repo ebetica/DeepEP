@@ -132,7 +132,8 @@ Buffer::Buffer(int rank,
                bool low_latency_mode,
                bool explicitly_destroy,
                bool enable_shrink,
-               bool use_fabric)
+               bool use_fabric,
+               bool use_default_stream_as_comm_stream)
     : rank(rank),
       num_ranks(num_ranks),
       num_nvl_bytes(num_nvl_bytes),
@@ -140,7 +141,10 @@ Buffer::Buffer(int rank,
       enable_shrink(enable_shrink),
       low_latency_mode(low_latency_mode),
       explicitly_destroy(explicitly_destroy),
-      comm_stream(at::cuda::getStreamFromPool(true)),
+      use_default_stream_as_comm_stream(use_default_stream_as_comm_stream),
+      comm_stream(use_default_stream_as_comm_stream
+          ? at::cuda::getCurrentCUDAStream()
+          : at::cuda::getStreamFromPool(true)),
       shared_memory_allocator(use_fabric) {
     // Metadata memory
     int64_t barrier_signal_bytes = NUM_MAX_NVL_PEERS * sizeof(int);
@@ -406,10 +410,12 @@ Buffer::get_dispatch_layout(
     }
 
     // Wait previous tasks to be finished
-    if (previous_event.has_value()) {
-        stream_wait(comm_stream, previous_event.value());
-    } else {
-        stream_wait(comm_stream, compute_stream);
+    if (not use_default_stream_as_comm_stream) {
+        if (previous_event.has_value()) {
+            stream_wait(comm_stream, previous_event.value());
+        } else {
+            stream_wait(comm_stream, compute_stream);
+        }
     }
 
     auto num_tokens = static_cast<int>(topk_idx.size(0)), num_topk = static_cast<int>(topk_idx.size(1));
@@ -446,7 +452,8 @@ Buffer::get_dispatch_layout(
                 to.has_value() ? to->record_stream(compute_stream) : void();
         }
     } else {
-        stream_wait(compute_stream, comm_stream);
+        if (not use_default_stream_as_comm_stream)
+            stream_wait(compute_stream, comm_stream);
     }
 
     // Switch back compute stream
@@ -567,10 +574,12 @@ Buffer::intranode_dispatch(const torch::Tensor& x,
     }
 
     // Wait previous tasks to be finished
-    if (previous_event.has_value()) {
-        stream_wait(comm_stream, previous_event.value());
-    } else {
-        stream_wait(comm_stream, compute_stream);
+    if (not use_default_stream_as_comm_stream) {
+        if (previous_event.has_value()) {
+            stream_wait(comm_stream, previous_event.value());
+        } else {
+            stream_wait(comm_stream, compute_stream);
+        }
     }
 
     // Create handles (only return for non-cached mode)
@@ -748,7 +757,8 @@ Buffer::intranode_dispatch(const torch::Tensor& x,
                 to.has_value() ? to->record_stream(compute_stream) : void();
         }
     } else {
-        stream_wait(compute_stream, comm_stream);
+        if (not use_default_stream_as_comm_stream)
+            stream_wait(compute_stream, comm_stream);
     }
 
     // Switch back compute stream
@@ -811,10 +821,12 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<EventHandl
     }
 
     // Wait previous tasks to be finished
-    if (previous_event.has_value()) {
-        stream_wait(comm_stream, previous_event.value());
-    } else {
-        stream_wait(comm_stream, compute_stream);
+    if (not use_default_stream_as_comm_stream) {
+        if (previous_event.has_value()) {
+            stream_wait(comm_stream, previous_event.value());
+        } else {
+            stream_wait(comm_stream, compute_stream);
+        }
     }
 
     int num_topk = 0;
@@ -900,7 +912,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<EventHandl
                 to.has_value() ? to->record_stream(compute_stream) : void();
         }
     } else {
-        stream_wait(compute_stream, comm_stream);
+        if (not use_default_stream_as_comm_stream)
+            stream_wait(compute_stream, comm_stream);
     }
 
     // Switch back compute stream
@@ -1047,10 +1060,12 @@ Buffer::internode_dispatch(const torch::Tensor& x,
     }
 
     // Wait previous tasks to be finished
-    if (previous_event.has_value()) {
-        stream_wait(comm_stream, previous_event.value());
-    } else {
-        stream_wait(comm_stream, compute_stream);
+    if (not use_default_stream_as_comm_stream) {
+        if (previous_event.has_value()) {
+            stream_wait(comm_stream, previous_event.value());
+        } else {
+            stream_wait(comm_stream, compute_stream);
+        }
     }
 
     // Create handles (only return for non-cached mode)
@@ -1278,7 +1293,8 @@ Buffer::internode_dispatch(const torch::Tensor& x,
                 to.has_value() ? to->record_stream(compute_stream) : void();
         }
     } else {
-        stream_wait(compute_stream, comm_stream);
+        if (not use_default_stream_as_comm_stream)
+            stream_wait(compute_stream, comm_stream);
     }
 
     // Switch back compute stream
@@ -1364,10 +1380,12 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<EventHandl
     }
 
     // Wait previous tasks to be finished
-    if (previous_event.has_value()) {
-        stream_wait(comm_stream, previous_event.value());
-    } else {
-        stream_wait(comm_stream, compute_stream);
+    if (not use_default_stream_as_comm_stream) {
+        if (previous_event.has_value()) {
+            stream_wait(comm_stream, previous_event.value());
+        } else {
+            stream_wait(comm_stream, compute_stream);
+        }
     }
 
     // Top-k checks
@@ -1480,7 +1498,8 @@ std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<EventHandl
                 to.has_value() ? to->record_stream(compute_stream) : void();
         }
     } else {
-        stream_wait(compute_stream, comm_stream);
+        if (not use_default_stream_as_comm_stream)
+            stream_wait(compute_stream, comm_stream);
     }
 
     // Switch back compute stream
@@ -1581,7 +1600,7 @@ Buffer::low_latency_dispatch(const torch::Tensor& x,
     auto compute_stream = at::cuda::getCurrentCUDAStream();
     auto launch_stream = return_recv_hook ? compute_stream : comm_stream;
     EP_HOST_ASSERT(not(async and return_recv_hook));
-    if (not return_recv_hook)
+    if (not return_recv_hook and not use_default_stream_as_comm_stream)
         stream_wait(launch_stream, compute_stream);
 
     // Allocate packed tensors
@@ -1654,7 +1673,7 @@ Buffer::low_latency_dispatch(const torch::Tensor& x,
         // NOTES: we must ensure the all tensors will not be deallocated before the stream-wait happens,
         // so in Python API, we must wrap all tensors into the event handle.
         event = EventHandle(launch_stream);
-    } else if (not return_recv_hook) {
+    } else if (not return_recv_hook and not use_default_stream_as_comm_stream) {
         stream_wait(compute_stream, launch_stream);
     }
 
@@ -1726,7 +1745,7 @@ std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::functio
     auto compute_stream = at::cuda::getCurrentCUDAStream();
     auto launch_stream = return_recv_hook ? compute_stream : comm_stream;
     EP_HOST_ASSERT(not(async and return_recv_hook));
-    if (not return_recv_hook)
+    if (not return_recv_hook and not use_default_stream_as_comm_stream)
         stream_wait(launch_stream, compute_stream);
 
     // Allocate output tensor
@@ -1778,7 +1797,7 @@ std::tuple<torch::Tensor, std::optional<EventHandle>, std::optional<std::functio
         // NOTES: we must ensure the all tensors will not be deallocated before the stream-wait happens,
         // so in Python API, we must wrap all tensors into the event handle.
         event = EventHandle(launch_stream);
-    } else if (not return_recv_hook) {
+    } else if (not return_recv_hook and not use_default_stream_as_comm_stream) {
         stream_wait(compute_stream, launch_stream);
     }
 
@@ -1862,7 +1881,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("current_stream_wait", &deep_ep::EventHandle::current_stream_wait);
 
     pybind11::class_<deep_ep::Buffer>(m, "Buffer")
-        .def(pybind11::init<int, int, int64_t, int64_t, bool, bool, bool, bool>())
+        .def(pybind11::init<int, int, int64_t, int64_t, bool, bool, bool, bool, bool>())
         .def("is_available", &deep_ep::Buffer::is_available)
         .def("get_num_rdma_ranks", &deep_ep::Buffer::get_num_rdma_ranks)
         .def("get_rdma_rank", &deep_ep::Buffer::get_rdma_rank)

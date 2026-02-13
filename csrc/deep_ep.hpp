@@ -91,6 +91,9 @@ private:
     // After `destroy()` be called, this flag will be true
     bool destroyed = false;
 
+    // Reuse the default CUDA stream for communication
+    bool use_default_stream_as_comm_stream;
+
     // Barrier signals
     int* barrier_signal_ptrs[NUM_MAX_NVL_PEERS] = {nullptr};
     int** barrier_signal_ptrs_gpu = nullptr;
@@ -120,7 +123,8 @@ public:
            bool low_latency_mode,
            bool explicitly_destroy,
            bool enable_shrink,
-           bool use_fabric);
+           bool use_fabric,
+           bool use_default_stream_as_comm_stream = false);
 
     ~Buffer() noexcept(false);
 
