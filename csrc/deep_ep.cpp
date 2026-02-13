@@ -467,7 +467,7 @@ std::tuple<torch::Tensor,
            std::optional<torch::Tensor>,
            std::optional<torch::Tensor>,
            std::optional<torch::Tensor>,
-           std::vector<int>,
+           pybind11::object,
            torch::Tensor,
            torch::Tensor,
            torch::Tensor,
@@ -489,7 +489,8 @@ Buffer::intranode_dispatch(const torch::Tensor& x,
                            const Config& config,
                            std::optional<EventHandle>& previous_event,
                            bool async,
-                           bool allocate_on_comm_stream) {
+                           bool allocate_on_comm_stream,
+                           bool num_recv_tokens_per_expert_as_cuda) {
     bool cached_mode = cached_rank_prefix_matrix.has_value();
 
     // One channel use two blocks, even-numbered blocks for sending, odd-numbered blocks for receiving.
@@ -586,7 +587,7 @@ Buffer::intranode_dispatch(const torch::Tensor& x,
     int num_recv_tokens = -1;
     auto rank_prefix_matrix = torch::Tensor();
     auto channel_prefix_matrix = torch::Tensor();
-    std::vector<int> num_recv_tokens_per_expert_list;
+    pybind11::object num_recv_tokens_per_expert_list = pybind11::cast(std::vector<int>());
 
     // Barrier or send sizes
     // To clean: channel start/end offset, head and tail
@@ -657,7 +658,17 @@ Buffer::intranode_dispatch(const torch::Tensor& x,
                     NUM_CPU_TIMEOUT_SECS)
                     throw std::runtime_error("DeepEP error: CPU recv timeout");
             }
-            num_recv_tokens_per_expert_list = std::vector<int>(moe_recv_expert_counter, moe_recv_expert_counter + num_local_experts);
+            if (num_recv_tokens_per_expert_as_cuda) {
+                auto tensor = torch::empty({num_local_experts}, torch::dtype(torch::kInt32).device(torch::kCUDA));
+                CUDA_CHECK(cudaMemcpyAsync(tensor.data_ptr<int>(),
+                                           const_cast<int*>(reinterpret_cast<volatile int*>(moe_recv_expert_counter)),
+                                           num_local_experts * sizeof(int),
+                                           cudaMemcpyHostToDevice, comm_stream));
+                num_recv_tokens_per_expert_list = pybind11::cast(tensor);
+            } else {
+                num_recv_tokens_per_expert_list = pybind11::cast(
+                    std::vector<int>(moe_recv_expert_counter, moe_recv_expert_counter + num_local_experts));
+            }
         }
     }
 
@@ -927,7 +938,7 @@ std::tuple<torch::Tensor,
            std::optional<torch::Tensor>,
            std::optional<torch::Tensor>,
            std::optional<torch::Tensor>,
-           std::vector<int>,
+           pybind11::object,
            torch::Tensor,
            torch::Tensor,
            std::optional<torch::Tensor>,
@@ -957,7 +968,8 @@ Buffer::internode_dispatch(const torch::Tensor& x,
                            const Config& config,
                            std::optional<EventHandle>& previous_event,
                            bool async,
-                           bool allocate_on_comm_stream) {
+                           bool allocate_on_comm_stream,
+                           bool num_recv_tokens_per_expert_as_cuda) {
 #ifndef DISABLE_NVSHMEM
     // In dispatch, CPU will busy-wait until GPU receive tensor size metadata from other ranks, which can be quite long.
     // If users of DeepEP need to execute other Python code on other threads, such as KV transfer, their code will get stuck due to GIL
@@ -1074,7 +1086,8 @@ Buffer::internode_dispatch(const torch::Tensor& x,
     auto recv_rdma_rank_prefix_sum = torch::Tensor();
     auto gbl_channel_prefix_matrix = torch::Tensor();
     auto recv_gbl_rank_prefix_sum = torch::Tensor();
-    std::vector<int> num_recv_tokens_per_expert_list;
+    std::vector<int> num_recv_tokens_per_expert_vec;
+    std::optional<torch::Tensor> num_recv_tokens_per_expert_tensor;
 
     // Barrier or send sizes
     if (cached_mode) {
@@ -1177,7 +1190,16 @@ Buffer::internode_dispatch(const torch::Tensor& x,
                     throw std::runtime_error("DeepEP error: timeout (dispatch CPU)");
                 }
             }
-            num_recv_tokens_per_expert_list = std::vector<int>(moe_recv_expert_counter, moe_recv_expert_counter + num_local_experts);
+            if (num_recv_tokens_per_expert_as_cuda) {
+                auto tensor = torch::empty({num_local_experts}, torch::dtype(torch::kInt32).device(torch::kCUDA));
+                CUDA_CHECK(cudaMemcpyAsync(tensor.data_ptr<int>(),
+                                           const_cast<int*>(reinterpret_cast<volatile int*>(moe_recv_expert_counter)),
+                                           num_local_experts * sizeof(int),
+                                           cudaMemcpyHostToDevice, comm_stream));
+                num_recv_tokens_per_expert_tensor = tensor;
+            } else {
+                num_recv_tokens_per_expert_vec = std::vector<int>(moe_recv_expert_counter, moe_recv_expert_counter + num_local_experts);
+            }
         }
     }
 
@@ -1301,12 +1323,22 @@ Buffer::internode_dispatch(const torch::Tensor& x,
     if (allocate_on_comm_stream)
         at::cuda::setCurrentCUDAStream(compute_stream);
 
+    // Convert num_recv_tokens_per_expert to pybind11::object and return (requires GIL)
+    pybind11::gil_scoped_acquire acquire;
+    pybind11::object num_recv_tokens_per_expert_list;
+    if (num_recv_tokens_per_expert_tensor.has_value())
+        num_recv_tokens_per_expert_list = pybind11::cast(num_recv_tokens_per_expert_tensor.value());
+    else if (!num_recv_tokens_per_expert_vec.empty())
+        num_recv_tokens_per_expert_list = pybind11::cast(std::move(num_recv_tokens_per_expert_vec));
+    else
+        num_recv_tokens_per_expert_list = pybind11::cast(std::vector<int>());
+
     // Return values
     return {recv_x,
             recv_x_scales,
             recv_topk_idx,
             recv_topk_weights,
-            num_recv_tokens_per_expert_list,
+            std::move(num_recv_tokens_per_expert_list),
             rdma_channel_prefix_matrix,
             gbl_channel_prefix_matrix,
             recv_rdma_channel_prefix_matrix,
@@ -1894,9 +1926,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def("sync", &deep_ep::Buffer::sync)
         .def("destroy", &deep_ep::Buffer::destroy)
         .def("get_dispatch_layout", &deep_ep::Buffer::get_dispatch_layout)
-        .def("intranode_dispatch", &deep_ep::Buffer::intranode_dispatch)
+        .def("intranode_dispatch", &deep_ep::Buffer::intranode_dispatch,
+             py::arg("x"), py::arg("x_scales"), py::arg("topk_idx"), py::arg("topk_weights"),
+             py::arg("num_tokens_per_rank"), py::arg("is_token_in_rank"), py::arg("num_tokens_per_expert"),
+             py::arg("cached_num_recv_tokens"), py::arg("cached_rank_prefix_matrix"), py::arg("cached_channel_prefix_matrix"),
+             py::arg("expert_alignment"), py::arg("num_worst_tokens"), py::arg("config"),
+             py::arg("previous_event"), py::arg("async_"), py::arg("allocate_on_comm_stream"),
+             py::arg("num_recv_tokens_per_expert_as_cuda") = false)
         .def("intranode_combine", &deep_ep::Buffer::intranode_combine)
-        .def("internode_dispatch", &deep_ep::Buffer::internode_dispatch)
+        .def("internode_dispatch", &deep_ep::Buffer::internode_dispatch,
+             py::arg("x"), py::arg("x_scales"), py::arg("topk_idx"), py::arg("topk_weights"),
+             py::arg("num_tokens_per_rank"), py::arg("num_tokens_per_rdma_rank"), py::arg("is_token_in_rank"),
+             py::arg("num_tokens_per_expert"), py::arg("cached_num_recv_tokens"), py::arg("cached_num_rdma_recv_tokens"),
+             py::arg("cached_rdma_channel_prefix_matrix"), py::arg("cached_recv_rdma_rank_prefix_sum"),
+             py::arg("cached_gbl_channel_prefix_matrix"), py::arg("cached_recv_gbl_rank_prefix_sum"),
+             py::arg("expert_alignment"), py::arg("num_worst_tokens"), py::arg("config"),
+             py::arg("previous_event"), py::arg("async_"), py::arg("allocate_on_comm_stream"),
+             py::arg("num_recv_tokens_per_expert_as_cuda") = false)
         .def("internode_combine", &deep_ep::Buffer::internode_combine)
         .def("clean_low_latency_buffer", &deep_ep::Buffer::clean_low_latency_buffer)
         .def("low_latency_dispatch", &deep_ep::Buffer::low_latency_dispatch)

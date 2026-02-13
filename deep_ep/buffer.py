@@ -40,6 +40,7 @@ class Buffer:
                  use_fabric: bool = False,
                  explicitly_destroy: bool = False,
                  enable_shrink: bool = False,
+                 use_default_stream_as_comm_stream: bool = False,
                  comm: Optional["mpi4py.MPI.Comm"] = None) -> None:  # noqa: F821
         """
         Initialize the communication buffer.
@@ -92,7 +93,7 @@ class Buffer:
         self.explicitly_destroy = explicitly_destroy
         self.enable_shrink = enable_shrink
         self.runtime = deep_ep_cpp.Buffer(self.rank, self.group_size, num_nvl_bytes, num_rdma_bytes, low_latency_mode, explicitly_destroy,
-                                          enable_shrink, use_fabric)
+                                          enable_shrink, use_fabric, use_default_stream_as_comm_stream)
 
         # Synchronize device IDs
         local_device_id = self.runtime.get_local_device_id()
@@ -329,7 +330,8 @@ class Buffer:
                  expert_alignment: int = 1, num_worst_tokens: int = 0,
                  config: Optional[Config] = None,
                  previous_event: Optional[EventOverlap] = None, async_finish: bool = False,
-                 allocate_on_comm_stream: bool = False) -> \
+                 allocate_on_comm_stream: bool = False,
+                 num_recv_tokens_per_expert_as_cuda: bool = False) -> \
             Tuple[Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor], Optional[torch.Tensor],
                   Optional[torch.Tensor], List[int], Tuple, EventOverlap]:
         """
@@ -378,7 +380,8 @@ class Buffer:
         if self.runtime.get_num_rdma_ranks() > 1:
             return self.internode_dispatch(x, handle, num_tokens_per_rank, num_tokens_per_rdma_rank, is_token_in_rank,
                                            num_tokens_per_expert, topk_idx, topk_weights, expert_alignment, num_worst_tokens, config,
-                                           previous_event, async_finish, allocate_on_comm_stream)
+                                           previous_event, async_finish, allocate_on_comm_stream,
+                                           num_recv_tokens_per_expert_as_cuda=num_recv_tokens_per_expert_as_cuda)
 
         # Launch the kernel with cached or non-cached mode
         x, x_scales = x if isinstance(x, tuple) else (x, None)
@@ -396,7 +399,8 @@ class Buffer:
                 self.runtime.intranode_dispatch(x, x_scales, topk_idx, topk_weights,
                                                 num_tokens_per_rank, is_token_in_rank, num_tokens_per_expert, 0, None, None,
                                                 expert_alignment, num_worst_tokens, config,
-                                                getattr(previous_event, 'event', None), async_finish, allocate_on_comm_stream)
+                                                getattr(previous_event, 'event', None), async_finish, allocate_on_comm_stream,
+                                                num_recv_tokens_per_expert_as_cuda)
             handle = (rank_prefix_matrix, channel_prefix_matrix, recv_channel_prefix_matrix, recv_src_idx, is_token_in_rank, send_head)
             return (
                 recv_x, recv_x_scales
@@ -459,7 +463,8 @@ class Buffer:
                            topk_idx: Optional[torch.Tensor] = None, topk_weights: Optional[torch.Tensor] = None, expert_alignment: int = 1,
                            num_worst_tokens: int = 0, config: Optional[Config] = None,
                            previous_event: Optional[EventOverlap] = None, async_finish: bool = False,
-                           allocate_on_comm_stream: bool = False) -> \
+                           allocate_on_comm_stream: bool = False,
+                           num_recv_tokens_per_expert_as_cuda: bool = False) -> \
             Tuple[Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor], Optional[torch.Tensor],
             Optional[torch.Tensor], List[int], Tuple, EventOverlap]:
         """
@@ -493,7 +498,8 @@ class Buffer:
                 x, x_scales, topk_idx, topk_weights,
                 num_tokens_per_rank, num_tokens_per_rdma_rank, is_token_in_rank, num_tokens_per_expert,
                 0, 0, None, None, None, None,
-                expert_alignment, num_worst_tokens, config, getattr(previous_event, 'event', None), async_finish, allocate_on_comm_stream)
+                expert_alignment, num_worst_tokens, config, getattr(previous_event, 'event', None), async_finish, allocate_on_comm_stream,
+                num_recv_tokens_per_expert_as_cuda)
             handle = (is_token_in_rank, rdma_channel_prefix_matrix, gbl_channel_prefix_matrix, recv_rdma_channel_prefix_matrix,
                       recv_rdma_rank_prefix_sum, recv_gbl_channel_prefix_matrix, recv_gbl_rank_prefix_sum, recv_src_meta, send_rdma_head,
                       send_nvl_head)

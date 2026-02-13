@@ -165,7 +165,7 @@ public:
                std::optional<torch::Tensor>,
                std::optional<torch::Tensor>,
                std::optional<torch::Tensor>,
-               std::vector<int>,
+               pybind11::object,
                torch::Tensor,
                torch::Tensor,
                torch::Tensor,
@@ -187,7 +187,8 @@ public:
                        const Config& config,
                        std::optional<EventHandle>& previous_event,
                        bool async,
-                       bool allocate_on_comm_stream);
+                       bool allocate_on_comm_stream,
+                       bool num_recv_tokens_per_expert_as_cuda = false);
 
     std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<EventHandle>> intranode_combine(
         const torch::Tensor& x,
@@ -207,7 +208,7 @@ public:
                std::optional<torch::Tensor>,
                std::optional<torch::Tensor>,
                std::optional<torch::Tensor>,
-               std::vector<int>,
+               pybind11::object,
                torch::Tensor,
                torch::Tensor,
                std::optional<torch::Tensor>,
@@ -237,7 +238,8 @@ public:
                        const Config& config,
                        std::optional<EventHandle>& previous_event,
                        bool async,
-                       bool allocate_on_comm_stream);
+                       bool allocate_on_comm_stream,
+                       bool num_recv_tokens_per_expert_as_cuda = false);
 
     std::tuple<torch::Tensor, std::optional<torch::Tensor>, std::optional<EventHandle>> internode_combine(
         const torch::Tensor& x,
