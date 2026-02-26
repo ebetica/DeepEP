@@ -80,6 +80,10 @@ private:
     int num_ranks, num_rdma_ranks, num_nvl_ranks;
     shared_memory::MemHandle ipc_handles[NUM_MAX_NVL_PEERS];
 
+    // Reuse the default CUDA stream for communication
+    // NOTE: must be declared before comm_stream for correct member initialization order
+    bool use_default_stream_as_comm_stream;
+
     // Stream for communication
     at::cuda::CUDAStream comm_stream;
 
@@ -90,9 +94,6 @@ private:
     bool explicitly_destroy;
     // After `destroy()` be called, this flag will be true
     bool destroyed = false;
-
-    // Reuse the default CUDA stream for communication
-    bool use_default_stream_as_comm_stream;
 
     // Barrier signals
     int* barrier_signal_ptrs[NUM_MAX_NVL_PEERS] = {nullptr};
